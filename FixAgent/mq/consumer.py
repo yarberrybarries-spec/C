@@ -192,6 +192,17 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
             from services.knowledge_service import get_knowledge_service
 
             service = get_knowledge_service()
+
+            async def report_progress(stage: str, percent: int):
+                # 阶段进度推送：复用知识结果队列，type=progress 由 Java 端识别后只转发 WebSocket
+                await publish_result(channel, {
+                    "type": "progress",
+                    "documentId": document_id,
+                    "manualId": manual_id,
+                    "userId": user_id,
+                    "data": {"stage": stage, "percent": percent},
+                }, exchange_name=KNOWLEDGE_EXCHANGE, routing_key=KNOWLEDGE_RESULT_KEY)
+
             result = await service.import_document(
                 file_url=file_url,
                 file_type=file_type,
@@ -203,6 +214,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
                 replace_existing=replace_existing,
                 old_document_id=old_document_id,
                 manual_id=manual_id,
+                progress_cb=report_progress,
             )
 
             await publish_result(channel, {

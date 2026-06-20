@@ -22,6 +22,11 @@ function elapsed(ts) {
   return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒'
 }
 
+// 知识导入任务带真实百分比时显示确定进度条；其余任务（如任务生成）保持不确定进度
+function hasPercent(job) {
+  return typeof job.percent === 'number' && job.percent > 0
+}
+
 /* ---------- GSAP：仅用于入场/离场这类「高光时刻」，连续动效交给 CSS ---------- */
 function trayEnter(el, done) {
   if (reduce) return done()
@@ -72,6 +77,11 @@ function itemLeave(el, done) {
             <div class="ti-meta">
               <template v-if="job.status === 'failed'">
                 <span class="ti-failtext">生成失败，请稍后重试</span>
+              </template>
+              <template v-else-if="hasPercent(job)">
+                <span class="ti-stage">{{ job.stage || '处理中' }}</span>
+                <span class="ti-progress"><i :style="{ width: job.percent + '%' }" /></span>
+                <span class="ti-pct">{{ job.percent }}%</span>
               </template>
               <template v-else>
                 <span class="ti-time">已运行 {{ elapsed(job.startedAt) }}</span>
@@ -272,6 +282,39 @@ function itemLeave(el, done) {
 @keyframes bar-slide {
   0% { transform: translateX(-110%); }
   100% { transform: translateX(280%); }
+}
+
+/* 确定进度（知识导入阶段百分比） */
+.ti-stage {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #a8997f;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ti-progress {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  border-radius: 3px;
+  background: #efe6d6;
+  overflow: hidden;
+}
+.ti-progress i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--plaza-accent);
+  transition: width 0.4s ease;
+}
+.ti-pct {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--plaza-accent);
+  flex-shrink: 0;
 }
 
 .ti-x {

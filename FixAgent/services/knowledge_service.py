@@ -84,7 +84,8 @@ class KnowledgeService:
         document_version: Optional[str] = None,
         replace_existing: bool = False,
         old_document_id: Optional[str] = None,
-        manual_id: Optional[int] = None
+        manual_id: Optional[int] = None,
+        progress_cb=None
     ) -> dict:
         try:
             return await self._import_document_impl(
@@ -99,6 +100,7 @@ class KnowledgeService:
                 replace_existing=replace_existing,
                 old_document_id=old_document_id,
                 manual_id=manual_id,
+                progress_cb=progress_cb,
             )
         except Exception as exc:
             if document_id:
@@ -124,7 +126,8 @@ class KnowledgeService:
         document_version: Optional[str] = None,
         replace_existing: bool = False,
         old_document_id: Optional[str] = None,
-        manual_id: Optional[int] = None
+        manual_id: Optional[int] = None,
+        progress_cb=None
     ) -> dict:
         """
         导入文档：解析 → 向量化 → 入库
@@ -142,6 +145,16 @@ class KnowledgeService:
             }
         """
         t0 = time.time()
+
+        async def emit_progress(stage: str, percent: int):
+            # 进度上报「尽力而为」：失败绝不能影响导入主流程
+            if progress_cb is None:
+                return
+            try:
+                await progress_cb(stage, percent)
+            except Exception as exc:
+                logger.warning("[知识导入] 进度上报失败(已忽略), stage=%s, error=%s", stage, exc)
+
         if document_id:
             self.vector_svc.put_document_manifest(document_id, {
                 "document_id": document_id,
@@ -200,6 +213,7 @@ class KnowledgeService:
         indexable_text_chunks_count = 0
 
         stage_timings_ms = {"parse_ms": int((time.time() - t0) * 1000)}
+        await emit_progress("解析文档", 20)
 
         # 2. 先按整篇文档构建任务；chunk 策略和 doc_id 规则保持不变。
         chunk_build_started = time.time()
@@ -296,6 +310,7 @@ class KnowledgeService:
                 })
 
         stage_timings_ms["chunk_build_ms"] = int((time.time() - chunk_build_started) * 1000)
+        await emit_progress("构建索引", 35)
 
         # 3a. 文本块：整篇文档全局分批并发向量化，再批量入库。
         text_embedding_started = time.time()
@@ -395,6 +410,7 @@ class KnowledgeService:
             raise RuntimeError("failed to write all text vector records")
         text_count = written
         stage_timings_ms["text_write_ms"] = int((time.time() - text_write_started) * 1000)
+        await emit_progress("文本向量化", 60)
 
         # 3b. 表格块：整篇文档全局并发向量化，表格失败只计数不中断整份导入。
         table_embedding_started = time.time()
@@ -454,6 +470,7 @@ class KnowledgeService:
                 document_id, len(table_docs), table_written,
             )
         stage_timings_ms["table_write_ms"] = int((time.time() - table_write_started) * 1000)
+        await emit_progress("表格处理", 72)
 
         # 3c. 图片本体：保留图片向量策略，改成整篇文档全局准备 + 批量图片向量化。
         image_prepare_started = time.time()
@@ -667,6 +684,7 @@ class KnowledgeService:
             image_success_count += 1
             successful_images.append(image_result)
         stage_timings_ms["image_write_ms"] = int((time.time() - image_write_started) * 1000)
+        await emit_progress("图片处理", 88)
 
         # 3d. 图片摘要：保留 image_summary 检索路线，摘要生成限流并发，摘要文本再全局批量向量化。
         image_summary_started = time.time()
@@ -799,6 +817,7 @@ class KnowledgeService:
                 document_id, len(summary_docs), summary_written,
             )
         stage_timings_ms["image_summary_write_ms"] = int((time.time() - image_summary_write_started) * 1000)
+        await emit_progress("图片摘要", 96)
 
         t1 = time.time()
         stage_timings_ms["total_ms"] = int((t1 - t0) * 1000)

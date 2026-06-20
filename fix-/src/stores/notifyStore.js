@@ -69,6 +69,12 @@ function startTimer() {
 function stopTimer() { if (timer) { clearInterval(timer); timer = null } }
 
 function handleMessage(msg) {
+  // 进度消息：只更新对应任务的百分比/阶段，不弹通知、不入历史、不触发对账
+  if (msg.type === 'KNOWLEDGE_IMPORT_PROGRESS') {
+    applyProgress(msg)
+    return
+  }
+
   state.notifications.unshift(msg)
   if (state.notifications.length > 50) state.notifications.pop()
 
@@ -84,6 +90,21 @@ function handleMessage(msg) {
   resolveByMessage(msg)
   // 2) 再做一次状态对账，兜底漏推 / id 不一致（如知识导入用 manualId 对 parseStatus）
   reconcileAll()
+}
+
+// 进度推送：按 manualId 命中进行中的知识导入任务，更新其百分比与阶段名
+function applyProgress(msg) {
+  const data = msg?.data || {}
+  const manualId = data.manualId != null ? String(data.manualId) : ''
+  if (!manualId) return
+  const percent = Number(data.percent)
+  for (const job of Object.values(state.jobs)) {
+    if (job.kind === 'knowledge' && job.status === 'running' && String(job.refId) === manualId) {
+      if (!Number.isNaN(percent)) job.percent = percent
+      job.stage = data.stage || ''
+      break
+    }
+  }
 }
 
 // 推送的 data 里若含某个进行中任务的 refId，则直接判定该任务完成
@@ -163,7 +184,7 @@ export const notifyStore = {
 
   /** 通用：登记一个后台任务（触发会产生 WS 通知的接口后调用） */
   trackJob({ key, kind, refId, title }) {
-    state.jobs[key] = { key, kind, refId: String(refId), title, status: 'running', startedAt: Date.now() }
+    state.jobs[key] = { key, kind, refId: String(refId), title, status: 'running', startedAt: Date.now(), percent: 0, stage: '' }
     persist()
     startTimer()
   },

@@ -33,6 +33,17 @@ public class KnowledgeResultListener {
     @RabbitListener(queues = "knowledge.result.queue")
     public void onResult(Map<String, Object> message, Channel channel,
                          @Header(org.springframework.amqp.support.AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws IOException {
+        // 进度消息：仅透传 WebSocket，不改文档状态、不做成败处理
+        if ("progress".equals(String.valueOf(message.get("type")))) {
+            try {
+                handleProgress(message);
+            } catch (Exception e) {
+                log.warn("[MQ消费] 转发知识导入进度失败", e);
+            }
+            channel.basicAck(deliveryTag, false);
+            return;
+        }
+
         String documentId = String.valueOf(message.get("documentId"));
         // 兼容旧格式：如果没有 documentId 就用 taskId
         if ("null".equals(documentId) || documentId.isEmpty()) {
@@ -106,5 +117,35 @@ public class KnowledgeResultListener {
             log.error("[MQ消费] 处理知识导入结果异常, documentId={}", documentId, e);
             channel.basicNack(deliveryTag, false, false);
         }
+    }
+
+    private void handleProgress(Map<String, Object> message) {
+        Object userIdRaw = message.get("userId");
+        if (userIdRaw == null) {
+            return;
+        }
+        Long userId;
+        try {
+            userId = Long.valueOf(String.valueOf(userIdRaw));
+        } catch (NumberFormatException e) {
+            return;
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = message.get("data") instanceof Map
+                ? (Map<String, Object>) message.get("data")
+                : Map.of();
+        Object stage = data.getOrDefault("stage", "");
+        Object percent = data.getOrDefault("percent", 0);
+        notificationService.send(userId, NotificationMessage.builder()
+                .type("KNOWLEDGE_IMPORT_PROGRESS")
+                .title("手册解析中")
+                .body(String.valueOf(stage))
+                .data(Map.of(
+                        "documentId", String.valueOf(message.get("documentId")),
+                        "manualId", String.valueOf(message.get("manualId")),
+                        "stage", stage,
+                        "percent", percent
+                ))
+                .build());
     }
 }
