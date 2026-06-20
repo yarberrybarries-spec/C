@@ -329,12 +329,7 @@ class FixAgent(BaseAgent):
                 get_save_memory_tool(),
                 get_delete_memory_tool(),
             ]
-        allowed = getattr(self, "_current_allowed_tools", None)
-        if allowed is None:
-            return self._tools
-        # 记忆工具是横切能力，不受意图 tool_scope 限制（否则 scoped 模式下 LLM 无法存/删记忆）
-        allowed_set = set(allowed) | _ALWAYS_ALLOWED_TOOLS
-        return [tool for tool in self._tools if tool.name in allowed_set]
+        return self._tools
 
     def get_tools_for_run(self, run_context: AgentRunContext) -> List[Any]:
         self.get_tools()
@@ -344,22 +339,6 @@ class FixAgent(BaseAgent):
             return tools
         allowed_set = set(allowed) | _ALWAYS_ALLOWED_TOOLS
         return [tool for tool in tools if tool.name in allowed_set]
-
-    def _customize_tool_kwargs(self, tool_name: str, kwargs: dict) -> dict:
-        """为 recall_conversation_detail 注入 user_id"""
-        if tool_name in ("recall_conversation_detail", "read_memory", "save_memory", "delete_memory") \
-                and hasattr(self, "_current_user_id"):
-            kwargs["user_id"] = self._current_user_id or ""
-        if tool_name in ("knowledge_retrieval", "java_graph_diagnosis_path"):
-            images = getattr(self, "_current_images", None)
-            if images and not kwargs.get("image_urls"):
-                kwargs["image_urls"] = images
-        if tool_name == "knowledge_retrieval":
-            enhanced_query = getattr(self, "_current_enhanced_query", None)
-            if enhanced_query:
-                query = str(kwargs.get("query") or "").strip()
-                kwargs["query"] = enhanced_query if not query else f"{query} {enhanced_query}"
-        return kwargs
 
     def _customize_tool_kwargs_for_run(
         self,
