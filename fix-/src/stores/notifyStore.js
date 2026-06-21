@@ -56,6 +56,19 @@ function failJob(key) {
   }, 6000)
   if (!hasRunning()) stopTimer()
 }
+// 知识导入成功：先冲到 100% 并短暂展示「完成」，再移除（仿 failJob 的暂留机制）
+function completeJob(key) {
+  const job = state.jobs[key]
+  if (!job || job.status !== 'running') return
+  job.status = 'done'
+  job.percent = 100
+  job.stage = '完成'
+  persist() // running-only：done 不写盘，刷新即清
+  setTimeout(() => {
+    if (state.jobs[key] && state.jobs[key].status === 'done') { delete state.jobs[key]; persist() }
+  }, 1400)
+  if (!hasRunning()) stopTimer()
+}
 function loadJobs() {
   clearJobs() // 先清空内存，避免跨账号残留被合并进来
   try { Object.assign(state.jobs, JSON.parse(localStorage.getItem(lsKey()) || '{}')) } catch (e) {}
@@ -114,8 +127,9 @@ function resolveByMessage(msg) {
   if (!ids.length) return
   for (const job of Object.values(state.jobs)) {
     if (job.status === 'running' && ids.includes(String(job.refId))) {
-      if (ok === false) failJob(job.key)          // 失败：标红暂留
-      else { delete state.jobs[job.key]; persist() } // 成功：直接清理
+      if (ok === false) failJob(job.key)                       // 失败：标红暂留
+      else if (job.kind === 'knowledge') completeJob(job.key)  // 知识导入：冲 100% 再移除
+      else { delete state.jobs[job.key]; persist() }           // 其它：直接清理
     }
   }
 }
@@ -144,7 +158,10 @@ async function reconcileAll() {
   for (const job of running) {
     try {
       const r = await checkStatus(job)
-      if (r === 'success') { delete state.jobs[job.key]; persist() }
+      if (r === 'success') {
+        if (job.kind === 'knowledge') completeJob(job.key)        // 知识导入：冲 100% 再移除
+        else { delete state.jobs[job.key]; persist() }
+      }
       else if (r === 'failed') { failJob(job.key) } // 标红暂留再移除
     } catch (e) { /* 网络抖动忽略，下次再对账 */ }
   }

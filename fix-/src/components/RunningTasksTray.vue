@@ -4,7 +4,7 @@ import { gsap } from 'gsap'
 import { notifyStore } from '@/stores/notifyStore'
 
 // 进行中 + 刚失败（失败项标红暂留 6 秒后自动移除）
-const jobs = computed(() => Object.values(notifyStore.state.jobs).filter(j => j.status === 'running' || j.status === 'failed'))
+const jobs = computed(() => Object.values(notifyStore.state.jobs).filter(j => j.status === 'running' || j.status === 'failed' || j.status === 'done'))
 const runningCount = computed(() => jobs.value.filter(j => j.status === 'running').length)
 
 // 每秒自增的响应式时钟，驱动「已运行 X 秒」重新计算
@@ -35,9 +35,16 @@ function displayPercent(job) {
 function tickProgress() {
   const list = jobs.value
   for (const job of list) {
-    if (job.kind !== 'knowledge' || job.status !== 'running') continue
-    const target = typeof job.percent === 'number' ? job.percent : 0
+    if (job.kind !== 'knowledge') continue
     let cur = displayMap[job.key]
+    if (job.status === 'done') {
+      // 完成：从当前值快速冲到 100%
+      if (cur == null) cur = 92
+      displayMap[job.key] = Math.min(100, cur + Math.max(1.5, (100 - cur) * 0.25))
+      continue
+    }
+    if (job.status !== 'running') continue
+    const target = typeof job.percent === 'number' ? job.percent : 0
     if (cur == null) cur = Math.max(target, 3)
     if (cur < target) {
       cur = target                                   // 真实档位到达：直接对齐，不倒退
@@ -93,10 +100,15 @@ function itemLeave(el, done) {
       </header>
 
       <transition-group tag="ul" class="tray-list" :css="false" @enter="itemEnter" @leave="itemLeave">
-        <li v-for="job in jobs" :key="job.key" class="tray-item" :class="{ 'is-failed': job.status === 'failed' }">
+        <li v-for="job in jobs" :key="job.key" class="tray-item" :class="{ 'is-failed': job.status === 'failed', 'is-done': job.status === 'done' }">
           <span v-if="job.status === 'failed'" class="ti-fail" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </span>
+          <span v-else-if="job.status === 'done'" class="ti-done" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 13l4 4L19 7" />
             </svg>
           </span>
           <span v-else class="ti-ring" aria-hidden="true" />
@@ -254,6 +266,28 @@ function itemLeave(el, done) {
   font-weight: 600;
   color: #c5402c;
 }
+
+/* 完成态：暖橄榄绿 + back-out 弹性对勾，呼应托盘入场动效 */
+.ti-done {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--plaza-success);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: done-pop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes done-pop {
+  0% { transform: scale(0.2); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.tray-item.is-done { background: rgba(94, 140, 62, 0.07); }
+.is-done .ti-progress i { background: var(--plaza-success); }
+.is-done .ti-pct { color: var(--plaza-success); }
+.is-done .ti-stage { color: var(--plaza-success); }
 
 /* 头部脉冲在无进行中任务（仅剩失败项）时转为静止灰点 */
 .tray-pulse.is-idle::before { animation: none; opacity: 0; }
