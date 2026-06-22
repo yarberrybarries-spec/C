@@ -108,7 +108,8 @@ class VectorService:
             port=self.settings.redis_port,
             password=self.settings.redis_password,
             db=self.settings.redis_db,
-            decode_responses=False
+            decode_responses=False,
+            protocol=2,  # redis-py 8 默认 RESP3 会让 FT.SEARCH 返回 dict；强制 RESP2 以兼容现有 list 解析
         )
         self._ensure_index()
 

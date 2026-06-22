@@ -8,11 +8,14 @@
 1. DocumentParserTool 解析 PDF → sections
 2. text_chunks → TextEmbedding.embed_batch() → VectorService.add_vector_batch()
 3. tables → 转 markdown 文本 → TextEmbedding → VectorService
-4. images → 优先用本地拆图路径做 ImageEmbedding，URL 仅用于持久化回显和兜底
+4. images → 本地图读 base64 直传 ImageEmbedding（绕开 dashscope OSS 中转），URL 仅用于持久化回显
 5. 返回导入统计
 """
 
 import asyncio
+import base64
+import mimetypes
+import os
 import time
 import hashlib
 import logging
@@ -35,6 +38,28 @@ def build_image_retrieval_text(policy_text: str, caption: str, section_title: st
     if caption:
         return caption
     return f"{(section_title or '').strip()} 第{page or '?'}页插图"
+
+
+# base64 直传上限：模型限图片 5MB，base64 体积 +33%，原图卡 4.5MB 留余量。
+_IMAGE_BASE64_MAX_BYTES = int(4.5 * 1024 * 1024)
+
+
+def encode_image_data_uri(local_path: str) -> str:
+    """把本地图片读成 base64 data URI，供 embedding 直传、绕开 dashscope OSS 中转。
+
+    返回空串表示不可用（路径无效/超限/读失败），由调用方降级为文本兜底。
+    """
+    if not local_path or not os.path.isfile(local_path):
+        return ""
+    try:
+        if os.path.getsize(local_path) > _IMAGE_BASE64_MAX_BYTES:
+            return ""
+        mime = mimetypes.guess_type(local_path)[0] or "image/png"
+        with open(local_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        return f"data:{mime};base64,{b64}"
+    except OSError:
+        return ""
 
 
 class KnowledgeService:
@@ -489,9 +514,14 @@ class KnowledgeService:
                     img.get("page", "?"),
                 )
                 if local_path:
-                    embedding_input = local_path
-                    embedding_source = "local_image"
-                elif image_url:
+                    data_uri = await asyncio.to_thread(encode_image_data_uri, local_path)
+                    if data_uri:
+                        embedding_input = data_uri
+                        embedding_source = "image_base64"
+                    else:
+                        embedding_input = ""
+                        embedding_source = "caption_text"
+                elif image_url and image_url.startswith(("http://", "https://")):
                     embedding_input = image_url
                     embedding_source = "image_url"
                 else:
