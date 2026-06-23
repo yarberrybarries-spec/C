@@ -103,6 +103,10 @@ async def _capture_and_save(user_message: str, user_id: str, turn_ts: Optional[i
                     "howToApply": "",
                     "source": "capture_fallback",
                     "turnTs": turn_ts,
+                    # 漏洞#4：兜底写也带结构化元数据。单句抽取、未经多轮确认 →
+                    # importance 中等偏上（画像每轮生效），confidence 压低（易被后续修正/淘汰，亦呼应 #5）。
+                    "importance": 6,
+                    "confidence": 0.7,
                 }
                 try:
                     resp = await client.post(url, params={"userId": user_id}, json=body, headers=headers)

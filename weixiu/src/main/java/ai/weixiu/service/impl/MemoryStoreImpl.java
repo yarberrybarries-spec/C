@@ -32,6 +32,7 @@ public class MemoryStoreImpl implements MemoryStore {
     private static final String STATUS_DELETED = "deleted";
     private static final String DEFAULT_TYPE = "project";
     private static final int DEFAULT_IMPORTANCE = 5;
+    private static final double DEFAULT_CONFIDENCE = 0.80;
     private static final int INDEX_LIMIT = 200;
     /** 维度预筛后，绑定到"其它上下文"的弱相关事实最多保留多少条（漏洞#3-B1，防淹没注意力）。 */
     private static final int OTHER_CONTEXT_LIMIT = 30;
@@ -209,6 +210,14 @@ public class MemoryStoreImpl implements MemoryStore {
             existing.setWhy(m.getWhy());
             existing.setHowToApply(m.getHowToApply());
             existing.setStatus(STATUS_ACTIVE);
+            // 漏洞#4：实时/兜底写也带 importance/confidence；null-safe——
+            // 老调用方/未提供时保留既有值，不把已有评分冲掉。usage_count 不动（#3 的淘汰信号）。
+            if (m.getImportance() != null) {
+                existing.setImportance(m.getImportance());
+            }
+            if (m.getConfidence() != null) {
+                existing.setConfidence(m.getConfidence());
+            }
             existing.setTurnTs(m.getTurnTs());
             existing.setSource(m.getSource());
             memoryFactService.updateById(existing);
@@ -227,7 +236,11 @@ public class MemoryStoreImpl implements MemoryStore {
         fact.setWhy(m.getWhy());
         fact.setHowToApply(m.getHowToApply());
         fact.setStatus(STATUS_ACTIVE);
-        fact.setImportance(DEFAULT_IMPORTANCE);
+        // 漏洞#4：三路写入结构对齐 —— importance/confidence 由调用方提供，缺省回落默认；
+        // usage_count 初始化为 0（与整合路一致，配合 #3 的使用信号回写）。
+        fact.setImportance(m.getImportance() != null ? m.getImportance() : DEFAULT_IMPORTANCE);
+        fact.setConfidence(m.getConfidence() != null ? m.getConfidence() : DEFAULT_CONFIDENCE);
+        fact.setUsageCount(0);
         fact.setCreatedAt(LocalDateTime.now());
         fact.setTurnTs(m.getTurnTs());
         fact.setSource(m.getSource());

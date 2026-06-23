@@ -33,4 +33,10 @@ public class MemoryEntry {
 
     /** 写入来源：agent_explicit/consolidation/capture_fallback */
     private String source;
+
+    /** 重要度 1-10（漏洞#4：三路写入对齐；null 时 Java 端回落默认 5） */
+    private Integer importance;
+
+    /** 置信度 0.00-1.00（漏洞#4：三路写入对齐；null 时 Java 端回落默认 0.80） */
+    private Double confidence;
 }

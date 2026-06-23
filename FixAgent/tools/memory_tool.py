@@ -148,6 +148,18 @@ class SaveMemoryTool(BaseTool):
                     "type": "string",
                     "description": "这条记忆以后如何应用（可选）",
                 },
+                "importance": {
+                    "type": "integer",
+                    "description": "重要度 1-10（可选）：1-3 临时/低价值，4-6 一般，7-9 重要（设备型号/关键配置/确认结论），10 核心（安全规程相关）。按这条记忆的长期价值给分，拿不准填 5。",
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "置信度 0-1（可选）：用户明确陈述且无矛盾≈0.9-1.0，正常≈0.8，推断/需进一步确认≈0.5-0.7。默认 0.9（通常用户已确认才存）。",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
             },
             "required": ["name", "description", "type", "content"],
         }
@@ -163,6 +175,8 @@ class SaveMemoryTool(BaseTool):
         user_id: str = "",
         source: str = "agent_explicit",
         turn_ts: Optional[int] = None,
+        importance: Optional[int] = None,
+        confidence: Optional[float] = None,
         **kwargs,
     ) -> dict:
         if not user_id:
@@ -187,6 +201,10 @@ class SaveMemoryTool(BaseTool):
             # turn_ts 由 FixAgent 从 run_context 注入，与偏好兜底共用同值。
             "source": source,
             "turnTs": turn_ts,
+            # 漏洞#4：三路写入结构对齐 —— 主 Agent 自评 importance/confidence；
+            # 未给时 confidence 默认 0.9（agent_explicit = 用户已确认的写入），importance 交 Java 回落默认 5。
+            "importance": importance,
+            "confidence": confidence if confidence is not None else 0.9,
         }
 
         try:
