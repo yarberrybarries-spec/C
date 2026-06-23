@@ -63,7 +63,10 @@ const userInitial = computed(() => {
 })
 
 const currentSession = computed(() =>
-  state.sessions.find((session) => session.id === state.currentSessionId),
+  aiChatStore.currentSession(props.storageKey, currentMode.value),
+)
+const modeSessions = computed(() =>
+  state.sessions.filter((session) => (session.mode || 'maintenance') === currentMode.value),
 )
 const messages = computed(() => currentSession.value?.messages || [])
 
@@ -154,26 +157,26 @@ function handleScroll() {
 }
 
 function handleNewSession() {
-  aiChatStore.newSession(props.storageKey)
+  aiChatStore.newSession(props.storageKey, currentMode.value)
   resetAgentPanel()
   scrollToBottom(true)
 }
 
 function handleSelectSession(sessionId) {
-  aiChatStore.selectSession(props.storageKey, sessionId)
+  aiChatStore.selectSession(props.storageKey, sessionId, currentMode.value)
   resetAgentPanel()
   if (window.innerWidth <= 1180) showHistory.value = false
   scrollToBottom(true)
 }
 
 function handleDeleteSession(sessionId) {
-  aiChatStore.deleteSession(props.storageKey, sessionId)
+  aiChatStore.deleteSession(props.storageKey, sessionId, currentMode.value)
   resetAgentPanel()
   scrollToBottom(true)
 }
 
 function handleClear() {
-  aiChatStore.clearCurrent(props.storageKey)
+  aiChatStore.clearCurrent(props.storageKey, currentMode.value)
   resetAgentPanel()
   scrollToBottom(true)
 }
@@ -196,7 +199,9 @@ function changeMode(mode) {
   if (state.streaming || currentMode.value === mode) return
   currentMode.value = mode
   localStorage.setItem(modeStorageKey, mode)
+  aiChatStore.currentSession(props.storageKey, mode)
   resetAgentPanel()
+  scrollToBottom(true)
 }
 
 watch(
@@ -249,7 +254,7 @@ function maybeAutoSendFromQuery() {
 }
 
 onMounted(() => {
-  aiChatStore.load(props.storageKey, props.welcomeMessage)
+  aiChatStore.load(props.storageKey, props.welcomeMessage, currentMode.value)
   showHistory.value = window.innerWidth > 1180
   scrollToBottom(true)
   maybeAutoSendFromQuery()
@@ -268,8 +273,9 @@ onActivated(() => {
   >
     <SessionSidebar
       :open="showHistory"
-      :sessions="state.sessions"
-      :current-session-id="state.currentSessionId"
+      :sessions="modeSessions"
+      :current-session-id="currentSession?.id || ''"
+      :mode="currentMode"
       @new="handleNewSession"
       @select="handleSelectSession"
       @delete="handleDeleteSession"
