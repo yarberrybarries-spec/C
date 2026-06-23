@@ -38,6 +38,9 @@ import java.util.stream.Collectors;
 @Slf4j
 public class MemoryResultListener {
 
+    /** 漏洞#6：滚动摘要硬长度上限（字符）。提示词已要求 ≤100字，这里做程序兜底防漂移/累积无界增长。 */
+    private static final int MAX_SUMMARY_LEN = 300;
+
     private final MemoryFactService memoryFactService;
     private final MemoryReflectionService memoryReflectionService;
     private final AiSessionService aiSessionService;
@@ -246,6 +249,13 @@ public class MemoryResultListener {
         // 6. 更新briefSummary
         String briefSummary = summaryData.getStr("briefSummary");
         if (briefSummary != null && !briefSummary.isEmpty()) {
+            // 漏洞#6：滚动摘要全靠提示词约束(≤100字、滚动不堆积)；加程序兜底——超长硬截断，
+            // 防模型漂移/累积导致摘要无界增长。关键实体不依赖摘要保全（都已落 memory_fact，摘要只承接近期线索）。
+            // 注意：briefSummary 为空时本就不更新（保留上一版），天然防"被空摘要冲掉"。
+            if (briefSummary.length() > MAX_SUMMARY_LEN) {
+                log.warn("[MQ结果] briefSummary 超长({}>{})，已截断。session={}", briefSummary.length(), MAX_SUMMARY_LEN, sessionId);
+                briefSummary = briefSummary.substring(0, MAX_SUMMARY_LEN);
+            }
             LambdaUpdateWrapper<AiSession> sessionWrapper = new LambdaUpdateWrapper<>();
             sessionWrapper.eq(AiSession::getId, Long.valueOf(sessionId))
                     .set(AiSession::getSummary, briefSummary);
