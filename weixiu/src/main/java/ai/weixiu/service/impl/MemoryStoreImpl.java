@@ -201,6 +201,9 @@ public class MemoryStoreImpl implements MemoryStore {
             // 同轮写仲裁（漏洞#1）：本次写不应覆盖既有行时直接跳过，
             // 挡住"同一句话里低优先级兜底盖掉高优先级主Agent"与"过期写盖新写"。
             if (!shouldOverwrite(existing, m.getTurnTs(), m.getSource())) {
+                // 漏洞#7：仲裁跳过 = 写入冲突，原本静默 return 无痕迹；记一条便于排查"谁被挡了"。
+                log.info("[记忆写入] skip-conflict user={} name={} source={} 既有source={} 既有turnTs={} 本次turnTs={}",
+                        userId, m.getName(), m.getSource(), existing.getSource(), existing.getTurnTs(), m.getTurnTs());
                 return;
             }
             // 就地更新并重新激活
@@ -221,6 +224,8 @@ public class MemoryStoreImpl implements MemoryStore {
             existing.setTurnTs(m.getTurnTs());
             existing.setSource(m.getSource());
             memoryFactService.updateById(existing);
+            // 漏洞#7：写入埋点 —— 覆盖既有记忆。
+            log.info("[记忆写入] overwrite user={} name={} source={} type={}", userId, m.getName(), m.getSource(), type);
             return;
         }
 
@@ -245,6 +250,8 @@ public class MemoryStoreImpl implements MemoryStore {
         fact.setTurnTs(m.getTurnTs());
         fact.setSource(m.getSource());
         memoryFactService.save(fact);
+        // 漏洞#7：写入埋点 —— 新建记忆。
+        log.info("[记忆写入] insert user={} name={} source={} type={}", userId, m.getName(), m.getSource(), type);
     }
 
     /**
