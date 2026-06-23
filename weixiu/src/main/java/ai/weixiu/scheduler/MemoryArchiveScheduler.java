@@ -19,13 +19,19 @@ import java.util.List;
  *
  * 每天凌晨 3:00 执行：
  * 1. 归档 90 天未使用 + 重要度 ≤ 3 + 置信度 < 0.6 的 active 事实
- * 2. 清理 7 天前的幂等表记录
- * 3. 清理 180 天前的 superseded 事实（物理删除）
+ * 2. A2 衰减淘汰：≥180 天未命中、importance<8 的非偏好/非待办陈旧事实归档
+ * 3. 清理 7 天前的幂等表记录
+ * 4. 清理 180 天前的 superseded 事实（物理删除）
  */
 @Component
 @AllArgsConstructor
 @Slf4j
 public class MemoryArchiveScheduler {
+
+    /** A2 衰减淘汰：≥此天数未命中(以 last_used_at 计，缺则按 created_at)的非关键事实归档。 */
+    private static final int STALE_DAYS = 180;
+    /** A2 豁免阈值：importance ≥ 此值视为关键事实，永不按时间衰减归档。 */
+    private static final int DECAY_CRITICAL_IMPORTANCE = 8;
 
     private final MemoryFactService memoryFactService;
     private final MemoryIdempotentMapper idempotentMapper;
@@ -35,11 +41,12 @@ public class MemoryArchiveScheduler {
         log.info("[归档调度] 开始执行记忆归档和清理...");
 
         int archived = archiveStaleActiveFacts();
+        int decayed = archiveDecayedFacts();
         int idempotentCleaned = cleanIdempotentTable();
         int supersededCleaned = cleanOldSupersededFacts();
 
-        log.info("[归档调度] 完成: 归档事实={}, 清理幂等记录={}, 清理过时事实={}",
-                archived, idempotentCleaned, supersededCleaned);
+        log.info("[归档调度] 完成: 归档(低价值)={}, 衰减淘汰(陈旧)={}, 清理幂等记录={}, 清理过时事实={}",
+                archived, decayed, idempotentCleaned, supersededCleaned);
     }
 
     /**
@@ -66,6 +73,45 @@ public class MemoryArchiveScheduler {
             return updated ? 1 : 0;
         } catch (Exception e) {
             log.error("[归档] 归档事实失败: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * A2 衰减淘汰：长期(≥{@link #STALE_DAYS} 天)未命中的"非关键、非偏好、非待办"事实归档。
+     *
+     * <p>补足 {@link #archiveStaleActiveFacts} 旧门(只淘 importance≤3 且 confidence&lt;0.6)漏掉的
+     * "中等重要但早已冷却"的陈旧客观事实。归档 = 软状态(archived)、非物理删，可恢复。</p>
+     *
+     * <p>豁免：importance≥{@link #DECAY_CRITICAL_IMPORTANCE}(关键事实/结论)、type=user(画像/偏好)、
+     * type=unresolved(待办)。陈旧判定用 COALESCE(last_used_at, created_at) &lt; 阈值——以 created_at 兜底，
+     * 避免误伤"刚写入还没机会被读"的新事实。</p>
+     */
+    private int archiveDecayedFacts() {
+        try {
+            LocalDateTime threshold = LocalDateTime.now().minusDays(STALE_DAYS);
+
+            // 选出命中行（条件写一次），再按 id 批量归档；顺带拿到准确条数便于观测。
+            LambdaQueryWrapper<MemoryFact> query = new LambdaQueryWrapper<>();
+            query.eq(MemoryFact::getStatus, "active")
+                    .lt(MemoryFact::getImportance, DECAY_CRITICAL_IMPORTANCE)
+                    .notIn(MemoryFact::getType, "user", "unresolved")
+                    .and(w -> w
+                            .and(x -> x.isNotNull(MemoryFact::getLastUsedAt).lt(MemoryFact::getLastUsedAt, threshold))
+                            .or(x -> x.isNull(MemoryFact::getLastUsedAt).lt(MemoryFact::getCreatedAt, threshold)));
+
+            List<MemoryFact> matched = memoryFactService.list(query);
+            if (matched.isEmpty()) {
+                return 0;
+            }
+            List<Long> ids = matched.stream().map(MemoryFact::getId).toList();
+            LambdaUpdateWrapper<MemoryFact> update = new LambdaUpdateWrapper<>();
+            update.in(MemoryFact::getId, ids).set(MemoryFact::getStatus, "archived");
+            memoryFactService.update(update);
+            log.info("[归档] A2 衰减淘汰: 归档 {} 条长期(≥{}天)未命中的陈旧事实", ids.size(), STALE_DAYS);
+            return ids.size();
+        } catch (Exception e) {
+            log.error("[归档] A2 衰减淘汰失败: {}", e.getMessage());
             return 0;
         }
     }
