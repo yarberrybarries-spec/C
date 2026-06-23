@@ -40,6 +40,20 @@ _PREF_CAPTURE_RE = re.compile(
     r"(我是|我叫|我作为|我担任|我负责|我干的是|我的(工作|岗位|职位|职责)是|我擅长|我是新手|我是老手|我是学徒)"
 )
 
+# ===== 漏洞#5：协商/疑问 vs 明确陈述 =====
+# 兜底只看单句，"以后能不能用英文？"这类疑问/协商/假设若被写成 reply-language=英文，
+# 会被当成已确认共识、下一轮就真用英文回复且难纠正。故：命中协商标记且无明确陈述/祈使
+# 标记的句子，视为"未确认"，兜底直接跳过（交主 Agent 在完整上下文里判断，或等用户明确）。
+_NEGOTIATION_RE = re.compile(
+    r"能不能|能否|可不可以|可以吗|可以么|要不要|要不|是否|是不是|好不好|好吗|行不行|行吗|[?？]|吗"
+)
+# 明确陈述/祈使（已决定/已要求/自述身份）——含这些则放行交 LLM 按子句判别，
+# 避免误杀"我是钳工，以后能用英文吗？"这种"陈述+疑问"混合句里的陈述部分。
+_DECLARATIVE_RE = re.compile(
+    r"改成|改为|换成|用回|都用|别用|不要再?用|不用|记住|记一下|记下|帮我记|存一下|"
+    r"我是|我叫|我作为|我担任|我负责|我干的是|我擅长|我是新手|我是老手|我是学徒"
+)
+
 _CANONICAL_NAMES = "回复语言→reply-language；回复风格/详略→reply-style；用户身份角色→user-role；用户专长/经验→user-expertise"
 
 _EXTRACT_SYSTEM_PROMPT = f"""你从用户的一句话里抽取「值得长期记住的用户画像」，只抽两类：
@@ -50,6 +64,7 @@ _EXTRACT_SYSTEM_PROMPT = f"""你从用户的一句话里抽取「值得长期记
 其它画像用简短英文 kebab-case 自拟稳定 name。
 
 【只在确实是持久画像时抽取】，下列不要抽：一次性的任务指令、设备/故障的客观事实、提问、寒暄、不确定的猜测。
+【特别注意·疑问与协商】用户只是在询问/商量/假设、尚未拍板时（如"以后能不能用英文？""要不要改简洁点？""如果用日语会不会更好"），不是已确立的偏好——对应项返回空，绝不要写成已确认偏好。只有用户明确决定/要求/陈述（"以后用英文""改简洁点""我是钳工"）才抽取。
 
 输出 JSON：
 {{"items": [{{"name": "reply-language", "content": "中文", "description": "回复语言偏好"}}]}}
@@ -64,10 +79,16 @@ _pending: Set[asyncio.Task] = set()
 
 
 def should_capture(user_message: str) -> bool:
-    """正则门控：这句话是否可能在表达偏好/身份。"""
+    """正则门控：这句话是否可能在表达【已确认的】偏好/身份。"""
     if not user_message:
         return False
-    return bool(_PREF_CAPTURE_RE.search(user_message))
+    if not _PREF_CAPTURE_RE.search(user_message):
+        return False
+    # 漏洞#5：命中协商/疑问标记且无明确陈述/祈使标记 → 未确认，不走兜底，避免误记当共识。
+    if _NEGOTIATION_RE.search(user_message) and not _DECLARATIVE_RE.search(user_message):
+        logger.info("[pref_capture] 跳过未确认的疑问/协商语，不写偏好: %s", user_message)
+        return False
+    return True
 
 
 def schedule_capture(user_message: str, user_id, turn_ts: Optional[int] = None) -> None:
