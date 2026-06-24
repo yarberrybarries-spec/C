@@ -77,7 +77,7 @@ async function submit() {
     await executeStep(props.taskId, s.id, {
       images: exec.images, note: exec.note.trim(), checkpointConfirmed: exec.confirmed,
     })
-    notifyStore.trackJob({ key: 'step:' + s.id, kind: 'step', refId: s.id, title: '步骤AI验证：' + (s.title || '') })
+    notifyStore.trackJob({ key: 'step:' + s.id, kind: 'step', refId: s.id, taskId: props.taskId, title: '步骤AI验证：' + (s.title || '') })
     ElMessage.success('已提交，AI 验证中…')
     emit('submitted')
   } catch (err) { ElMessage.error('提交失败：' + (err.message || '')) }

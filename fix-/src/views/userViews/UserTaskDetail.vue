@@ -92,6 +92,7 @@ const readAlong = useStepReadAlong(steps, {
   onFinish: () => ElMessage.success('跟读完成'),
 })
 
+let verifyPollTimer = null
 async function load() {
   loading.value = true
   try {
@@ -102,6 +103,15 @@ async function load() {
   } finally {
     loading.value = false
   }
+  scheduleVerifyPoll()
+}
+
+// 兜底：有步骤处于 SUBMITTED(AI验证中) 时每 8 秒自刷，确保即使 STEP_VERIFIED 推送丢失，
+// 页面也能反映验证完成（不再永远停在「验证中」）。无在验证步骤时自动停止。
+function scheduleVerifyPoll() {
+  if (verifyPollTimer) { clearTimeout(verifyPollTimer); verifyPollTimer = null }
+  const verifying = (task.value?.steps || []).some(s => s.status === 'SUBMITTED')
+  if (verifying) verifyPollTimer = setTimeout(load, 8000)
 }
 
 async function onStart() {
@@ -202,6 +212,7 @@ onMounted(async () => {
 onUnmounted(() => {
   motionContext?.revert()
   readAlong.exit() // 离开页面时停掉正在播放的跟读语音
+  if (verifyPollTimer) clearTimeout(verifyPollTimer)
 })
 </script>
 
