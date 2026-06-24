@@ -6,6 +6,7 @@ const props = defineProps({
   sessions: { type: Array, default: () => [] },
   currentSessionId: { type: String, default: '' },
   open: { type: Boolean, default: false },
+  mode: { type: String, default: 'maintenance' },
 })
 
 const emit = defineEmits(['new', 'select', 'delete', 'close'])
@@ -17,13 +18,16 @@ const visibleSessions = computed(() => {
   return props.sessions.filter((session) => (session.title || '').toLowerCase().includes(q))
 })
 
+const modeTitle = computed(() => (props.mode === 'chat' ? 'Chat records' : 'Maintenance records'))
+const modeBadge = computed(() => (props.mode === 'chat' ? 'CHAT' : 'MAINTENANCE'))
+
 function formatTime(timestamp) {
   const date = new Date(timestamp)
   const diff = Date.now() - date.getTime()
-  if (diff < 60000) return '刚刚'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`
+  if (diff < 60000) return 'just now'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} hr ago`
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)} days ago`
   return date.toLocaleDateString('zh-CN')
 }
 </script>
@@ -32,17 +36,17 @@ function formatTime(timestamp) {
   <aside class="session-sidebar" :class="{ open }">
     <div class="side-head">
       <div>
-        <strong>对话历史</strong>
-        <span>{{ sessions.length }} 条记录</span>
+        <strong>{{ modeTitle }}</strong>
+        <span>{{ sessions.length }} sessions</span>
       </div>
-      <button type="button" title="新对话" @click="emit('new')">
+      <button type="button" title="New session" @click="emit('new')">
         <el-icon><Plus /></el-icon>
       </button>
     </div>
 
     <label class="history-search">
       <el-icon><Search /></el-icon>
-      <input v-model="keyword" type="text" placeholder="搜索历史对话" />
+      <input v-model="keyword" type="text" placeholder="Search sessions" />
     </label>
 
     <div class="session-list">
@@ -56,18 +60,18 @@ function formatTime(timestamp) {
       >
         <span class="session-icon"><el-icon><EditPen /></el-icon></span>
         <span class="session-copy">
-          <strong>{{ session.title || '新对话' }}</strong>
-          <small>{{ formatTime(session.updatedAt) }}</small>
+          <strong>{{ session.title || 'New session' }}</strong>
+          <small><b>{{ modeBadge }}</b>{{ formatTime(session.updatedAt) }}</small>
         </span>
         <span
           class="session-delete"
-          title="删除"
+          title="Delete"
           @click.stop="emit('delete', session.id)"
         >
           <el-icon><Delete /></el-icon>
         </span>
       </button>
-      <div v-if="!visibleSessions.length" class="empty-history">暂无匹配记录</div>
+      <div v-if="!visibleSessions.length" class="empty-history">No matching sessions</div>
     </div>
   </aside>
 </template>
@@ -224,8 +228,20 @@ function formatTime(timestamp) {
 }
 
 .session-copy small {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--plaza-text-muted);
   font-size: 12px;
+}
+
+.session-copy small b {
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--plaza-accent);
+  background: var(--plaza-accent-soft);
+  font-size: 9px;
+  font-weight: 800;
 }
 
 .session-delete {
