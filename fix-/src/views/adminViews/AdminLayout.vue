@@ -480,6 +480,8 @@ function handleHeaderSearch() {
 .rail.collapsed .foot-user {
   flex: 0 0 auto;
   justify-content: center;
+  gap: 0;
+  width: 34px;
 }
 .rail.collapsed .rail-tag {
   padding: 7px;
@@ -637,7 +639,7 @@ function handleHeaderSearch() {
   .rail .foot-logout-text { opacity: 0; width: 0; overflow: hidden; }
   .rail .brand, .rail .rail-tag, .rail .nav-item { justify-content: center; gap: 0; }
   .rail .rail-foot { flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px 0 14px; }
-  .rail .foot-user { flex: 0 0 auto; justify-content: center; }
+  .rail .foot-user { flex: 0 0 auto; justify-content: center; gap: 0; width: 34px; }
   .rail .nav-item { padding: 0; }
   .rail .foot-logout { padding: 0; width: 32px; justify-content: center; }
   .main { margin-left: 108px; }
