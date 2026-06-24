@@ -47,7 +47,7 @@ public class TtsServiceImpl implements TtsService {
         SpeechSynthesisParam param = SpeechSynthesisParam.builder()
                 .model(MODEL)
                 .voice(useVoice)
-                .format(SpeechSynthesisAudioFormat.MP3_22050HZ_MONO_16BIT)
+                .format(SpeechSynthesisAudioFormat.MP3_22050HZ_MONO_256KBPS)
                 .apiKey(dashScopeApiKey)
                 .build();
 
