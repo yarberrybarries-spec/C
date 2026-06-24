@@ -92,6 +92,12 @@ const readAlong = useStepReadAlong(steps, {
   onFinish: () => ElMessage.success('跟读完成'),
 })
 
+// 「从此步跟读」：定位该步在已排序数组中的下标，从这一步开始跟读
+function startReadAlongFrom(step) {
+  const i = steps.value.findIndex((x) => x.id === step.id)
+  if (i >= 0) readAlong.start(i)
+}
+
 let verifyPollTimer = null
 async function load() {
   loading.value = true
@@ -394,6 +400,7 @@ onUnmounted(() => {
               :reading="s.id === readAlong.currentStepId.value"
               @submitted="load"
               @chat="onChat"
+              @read-along="startReadAlongFrom"
             />
           </div>
           <aside class="assistant-column">

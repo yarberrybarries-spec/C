@@ -8,6 +8,7 @@ import {
   Check,
   Clock,
   Document,
+  Headset,
   Picture,
   UploadFilled,
   Warning,
@@ -24,7 +25,7 @@ const props = defineProps({
   executing: { type: Boolean, default: false },// 任务是否处于 EXECUTING
   reading: { type: Boolean, default: false },  // 跟读模式下：是否正在念这一步（高亮）
 })
-const emit = defineEmits(['submitted', 'chat'])
+const emit = defineEmits(['submitted', 'chat', 'read-along'])
 
 const exec = reactive({ note: '', images: [], confirmed: false })
 const uploading = ref(false)
@@ -131,6 +132,9 @@ async function forceComplete() {
         <span v-if="!requirementCount && !step.estimatedMinutes">标准作业步骤</span>
 
         <div class="step-tools">
+          <button type="button" class="ask-button" @click="emit('read-along', step)">
+            <el-icon><Headset /></el-icon> 从此步跟读
+          </button>
           <button type="button" class="ask-button" @click="emit('chat', step)">
             <el-icon><ChatDotRound /></el-icon> 问 AI
           </button>

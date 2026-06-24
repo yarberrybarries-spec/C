@@ -49,10 +49,13 @@ export function useStepReadAlong(stepsRef, options = {}) {
     })
   }
 
-  function start() {
-    if (!(stepsRef.value || []).length) return
+  // fromIndex：从第几步开始跟读（默认 0 = 从头）。供「从此步跟读」按下标进入。
+  function start(fromIndex = 0) {
+    const steps = stepsRef.value || []
+    if (!steps.length) return
+    const i = Math.min(Math.max(Number(fromIndex) || 0, 0), steps.length - 1)
     active.value = true
-    readAt(0)
+    readAt(i)
   }
 
   function next() {
