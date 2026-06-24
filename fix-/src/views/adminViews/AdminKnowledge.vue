@@ -1,10 +1,11 @@
 <script setup>
-import { ref, reactive, onMounted, computed, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { Search, Plus, Download, Delete, Upload, Document, Folder, Files } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMaintenanceManualList, deleteMaintenanceManual } from '@/api/maintenanceManual'
 import MaintenanceManualUpload from '@/components/MaintenanceManualUpload.vue'
 import MaintenanceManualUpdate from '@/components/MaintenanceManualUpdate.vue'
+import { notifyStore } from '@/stores/notifyStore'
 
 const searchQuery = ref('')
 const uploadDialogVisible = ref(false)
@@ -14,6 +15,7 @@ const uploadRef = ref(null)
 const loading = ref(false)
 const list = ref([])
 const pagination = reactive({ page: 1, pageSize: 12, total: 0 })
+let parseRefreshTimer = null
 
 // 分类选项
 const categoryOptions = [
@@ -44,6 +46,33 @@ async function loadList() {
 onMounted(() => {
   loadList()
 })
+
+function refreshAfterParse() {
+  clearTimeout(parseRefreshTimer)
+  parseRefreshTimer = setTimeout(() => loadList(), 200)
+}
+
+// WebSocket 正常推送解析完成时，重新获取手册的 fileUrl / parseStatus。
+watch(
+  () => notifyStore.state.notifications[0],
+  (notification) => {
+    if (notification?.type === 'KNOWLEDGE_IMPORTED') refreshAfterParse()
+  },
+)
+
+// WebSocket 漏推时，后台轮询对账会把知识导入任务标记为 done，同样刷新列表。
+watch(
+  () => Object.values(notifyStore.state.jobs)
+    .filter((job) => job.kind === 'knowledge')
+    .map((job) => `${job.key}:${job.status}`)
+    .join('|'),
+  (current, previous = '') => {
+    const completedNow = current.split('|').some((item) => item.endsWith(':done') && !previous.includes(item))
+    if (completedNow) refreshAfterParse()
+  },
+)
+
+onUnmounted(() => clearTimeout(parseRefreshTimer))
 
 function handleSearch() {
   pagination.page = 1
