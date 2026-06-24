@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
-import { ChatDotRound, CopyDocument, DataAnalysis, Right } from '@element-plus/icons-vue'
+import { ChatDotRound, CopyDocument, DataAnalysis, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { useSpeech } from '@/composables/useSpeech'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -9,6 +10,14 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['open-agent'])
+
+// 语音朗读：全局单例播放器，按 message.id 标识当前是否在播/在加载本条
+const { speak, isSpeaking, isLoading } = useSpeech()
+const speaking = computed(() => isSpeaking(props.message.id))
+const loadingSpeech = computed(() => isLoading(props.message.id))
+function toggleSpeak() {
+  speak(props.message.id, props.message.content || '')
+}
 
 const isUser = computed(() => props.message.role === 'user')
 const diagnosisItems = computed(() =>
@@ -202,6 +211,19 @@ async function copyMessage() {
         <button type="button" title="复制回复" @click="copyMessage">
           <el-icon><CopyDocument /></el-icon>
           <span>复制</span>
+        </button>
+        <button
+          type="button"
+          :title="speaking ? '停止朗读' : '朗读回复'"
+          :disabled="loadingSpeech"
+          @click="toggleSpeak"
+        >
+          <el-icon :class="{ 'is-loading': loadingSpeech }">
+            <Loading v-if="loadingSpeech" />
+            <VideoPause v-else-if="speaking" />
+            <VideoPlay v-else />
+          </el-icon>
+          <span>{{ loadingSpeech ? '合成中' : speaking ? '停止' : '朗读' }}</span>
         </button>
       </div>
     </div>

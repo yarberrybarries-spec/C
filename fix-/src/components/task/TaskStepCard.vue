@@ -22,6 +22,7 @@ const props = defineProps({
   taskId: { required: true },
   active: { type: Boolean, default: false },   // 是否当前应执行的步骤
   executing: { type: Boolean, default: false },// 任务是否处于 EXECUTING
+  reading: { type: Boolean, default: false },  // 跟读模式下：是否正在念这一步（高亮）
 })
 const emit = defineEmits(['submitted', 'chat'])
 
@@ -97,7 +98,7 @@ async function forceComplete() {
 <template>
   <article
     class="step-card-shell"
-    :class="{ active: canAct, done, rejected }"
+    :class="{ active: canAct, done, rejected, reading }"
     :data-step-id="String(step.id)"
   >
     <span class="timeline-node" aria-hidden="true">
@@ -332,6 +333,18 @@ async function forceComplete() {
   content: '';
 }
 .step-card-shell.done .step-card { background: linear-gradient(180deg, #fbfdf6, var(--plaza-bg-card)); }
+
+/* 跟读模式：正在念的步骤——左侧高亮边 + 柔光，区别于"当前执行"态 */
+.step-card-shell.reading .step-card {
+  border-color: var(--plaza-accent);
+  border-left: 3px solid var(--plaza-accent);
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft), var(--plaza-shadow-organic);
+}
+.step-card-shell.reading .timeline-node {
+  color: #fff;
+  background: var(--plaza-accent);
+  box-shadow: 0 0 0 1px var(--plaza-accent), 0 0 0 6px var(--plaza-accent-soft);
+}
 
 .step-header {
   display: flex;

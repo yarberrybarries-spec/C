@@ -5,10 +5,13 @@ import { ElMessage } from 'element-plus'
 import { gsap } from 'gsap'
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   Clock,
+  Close,
   DataAnalysis,
   Document,
+  Headset,
   Refresh,
   Tickets,
   Warning,
@@ -18,6 +21,7 @@ import { draftFromTask, getMyCases } from '@/api/caseRecord'
 import { notifyStore } from '@/stores/notifyStore'
 import { taskAssistantStore } from '@/stores/taskAssistantStore'
 import { taskStatus, urgency, levelLabel, stepActionable } from '@/constants/taskStatus'
+import { useStepReadAlong } from '@/composables/useStepReadAlong'
 import TaskStepCard from '@/components/task/TaskStepCard.vue'
 import TaskAssistantPanel from '@/components/task/TaskAssistantPanel.vue'
 import CaseSubmitDialog from '@/components/case/CaseSubmitDialog.vue'
@@ -81,6 +85,12 @@ function scrollToStep(id) {
   const el = document.getElementById('step-' + id)
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
+
+// 跟读模式：逐步念「标题+内容+安全提示」，读完一步停下等点「下一步」；当前步滚动到可视区 + 高亮
+const readAlong = useStepReadAlong(steps, {
+  onStep: (step) => scrollToStep(step.id),
+  onFinish: () => ElMessage.success('跟读完成'),
+})
 
 async function load() {
   loading.value = true
@@ -191,6 +201,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   motionContext?.revert()
+  readAlong.exit() // 离开页面时停掉正在播放的跟读语音
 })
 </script>
 
@@ -331,6 +342,33 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- 跟读模式控制条：手上有油污/边看设备边操作时，用「听」代替「盯屏幕」 -->
+        <div v-if="steps.length" class="readalong-bar" :class="{ on: readAlong.active.value }">
+          <button v-if="!readAlong.active.value" type="button" class="ra-start" @click="readAlong.start()">
+            <el-icon><Headset /></el-icon> 跟读检修步骤
+          </button>
+          <template v-else>
+            <span class="ra-status">
+              <i class="ra-dot" />
+              正在跟读 · 第 {{ steps[readAlong.index.value]?.sortOrder || '—' }} 步
+              <em v-if="readAlong.waitingNext.value">（已读完，点「下一步」继续）</em>
+            </span>
+            <div class="ra-actions">
+              <button
+                v-if="readAlong.waitingNext.value && !readAlong.isLast.value"
+                type="button"
+                class="ra-next"
+                @click="readAlong.next()"
+              >
+                下一步 <el-icon><ArrowRight /></el-icon>
+              </button>
+              <button type="button" class="ra-exit" @click="readAlong.exit()">
+                <el-icon><Close /></el-icon> 退出跟读
+              </button>
+            </div>
+          </template>
+        </div>
+
         <div class="work-grid">
           <div class="steps-column">
             <div class="timeline-line" aria-hidden="true" />
@@ -342,6 +380,7 @@ onUnmounted(() => {
               :task-id="taskId"
               :executing="task.status === 'EXECUTING'"
               :active="s.id === activeStepId"
+              :reading="s.id === readAlong.currentStepId.value"
               @submitted="load"
               @chat="onChat"
             />
@@ -533,6 +572,29 @@ onUnmounted(() => {
 .workflow-summary i { width: 7px; height: 7px; border-radius: 50%; background: var(--plaza-border-strong); }
 .workflow-summary i.done { background: #5e8c3e; }
 .workflow-summary i.active { background: var(--plaza-accent); box-shadow: 0 0 0 4px var(--plaza-accent-soft); }
+
+/* ===== 跟读模式控制条 ===== */
+.readalong-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 11px; }
+.readalong-bar.on { padding: 9px 13px; border: 1px solid var(--plaza-accent-soft-strong); border-radius: 11px; background: var(--plaza-accent-soft); }
+.ra-start {
+  display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 0 15px;
+  border: 1px solid var(--plaza-accent-soft-strong); border-radius: 9px;
+  color: var(--plaza-accent); background: var(--plaza-bg-card);
+  font-size: 12px; font-weight: 800; cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.ra-start:hover { background: var(--plaza-accent-soft); border-color: var(--plaza-accent); }
+.ra-status { display: inline-flex; align-items: center; gap: 8px; color: var(--plaza-accent); font-size: 12px; font-weight: 700; }
+.ra-status em { color: var(--plaza-text-muted); font-style: normal; font-size: 11px; font-weight: 600; }
+.ra-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--plaza-accent); box-shadow: 0 0 0 4px var(--plaza-accent-soft); animation: ra-pulse 1.4s ease-in-out infinite; }
+@keyframes ra-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.ra-actions { display: inline-flex; align-items: center; gap: 8px; }
+.ra-next, .ra-exit { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 0 13px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
+.ra-next { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 6px 16px rgba(196, 96, 47, 0.22); }
+.ra-next:hover { filter: brightness(1.05); }
+.ra-exit { border: 1px solid var(--plaza-border-strong); color: var(--plaza-text-muted); background: var(--plaza-bg-card); }
+.ra-exit:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); }
+@media (prefers-reduced-motion: reduce) { .ra-dot { animation: none; } }
 
 .work-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(350px, 0.38fr); align-items: start; gap: 14px; }
 .steps-column { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 10px; }
