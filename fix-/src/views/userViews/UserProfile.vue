@@ -1,20 +1,21 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { gsap } from 'gsap'
 import {
   Calendar,
   Clock,
   EditPen,
+  Key,
   Lock,
   Message,
   Phone,
   User,
 } from '@element-plus/icons-vue'
 import { getUserById, updateUser } from '@/api/user'
+import { useAccountSecurity } from '@/composables/useAccountSecurity'
 
-const router = useRouter()
 const pageRef = ref(null)
 const loading = ref(false)
 const submitting = ref(false)
@@ -22,31 +23,24 @@ const isEditing = ref(false)
 const formRef = ref(null)
 const userInfo = ref({})
 
-const form = reactive({
-  phone: '',
-  email: '',
-})
+const form = reactive({ phone: '' })
 
 const rules = {
   phone: [
     { pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号', trigger: 'blur' },
   ],
-  email: [
-    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' },
-  ],
 }
+
+// 账号安全：邮箱验证码绑定（mode=1）+ 邮箱验证码改密码（mode=2），逻辑/倒计时封装在 composable
+const {
+  emailForm, emailCountdown, emailSending, emailBinding, sendBindCode, bindEmail,
+  pwdForm, pwdCountdown, pwdSending, pwdSubmitting, hasEmail, sendPwdCode, changePassword,
+} = useAccountSecurity(() => userInfo.value.email, () => fetchUserInfo())
 
 const userInitial = computed(() => userInfo.value.name?.[0] || 'U')
 const isActive = computed(() => Number(userInfo.value.status) === 1)
-const normalizedForm = computed(() => ({
-  phone: form.phone?.trim() || '',
-  email: form.email?.trim() || '',
-}))
-const isDirty = computed(
-  () =>
-    normalizedForm.value.phone !== (userInfo.value.phone || '') ||
-    normalizedForm.value.email !== (userInfo.value.email || ''),
-)
+const normalizedForm = computed(() => ({ phone: form.phone?.trim() || '' }))
+const isDirty = computed(() => normalizedForm.value.phone !== (userInfo.value.phone || ''))
 
 const identityReadouts = computed(() => [
   { label: '联系方式', value: userInfo.value.phone || '未绑定手机号', icon: Phone },
@@ -70,7 +64,6 @@ function syncLocalUser(nextUser) {
 
 function syncForm() {
   form.phone = userInfo.value.phone || ''
-  form.email = userInfo.value.email || ''
   formRef.value?.clearValidate()
 }
 
@@ -167,14 +160,13 @@ async function handleUpdate() {
       name: userInfo.value.name,
       number: userInfo.value.number,
       phone: normalizedForm.value.phone || null,
-      email: normalizedForm.value.email || null,
+      email: userInfo.value.email || null, // 邮箱不在此表单改，原样回传避免被清空（邮箱走验证码绑定）
     }
     const res = await updateUser(payload)
     if (res.code === '200' || res.code === 200) {
       userInfo.value = {
         ...userInfo.value,
         phone: normalizedForm.value.phone,
-        email: normalizedForm.value.email,
       }
       syncLocalUser(userInfo.value)
       isEditing.value = false
@@ -188,10 +180,6 @@ async function handleUpdate() {
   } finally {
     submitting.value = false
   }
-}
-
-function goToPasswordReset() {
-  router.push('/forgot-password')
 }
 
 function handleBeforeUnload(event) {
@@ -366,18 +354,12 @@ onBeforeUnmount(() => {
             label-position="top"
             class="contact-form"
           >
-            <div class="form-grid">
-              <el-form-item label="手机号" prop="phone">
-                <el-input v-model="form.phone" type="tel" autocomplete="tel" placeholder="请输入手机号" clearable>
-                  <template #prefix><el-icon><Phone /></el-icon></template>
-                </el-input>
-              </el-form-item>
-              <el-form-item label="邮箱" prop="email">
-                <el-input v-model="form.email" type="email" autocomplete="email" placeholder="请输入邮箱" clearable>
-                  <template #prefix><el-icon><Message /></el-icon></template>
-                </el-input>
-              </el-form-item>
-            </div>
+            <el-form-item label="手机号" prop="phone">
+              <el-input v-model="form.phone" type="tel" autocomplete="tel" placeholder="请输入手机号" clearable>
+                <template #prefix><el-icon><Phone /></el-icon></template>
+              </el-input>
+            </el-form-item>
+            <p class="form-tip">邮箱需通过验证码绑定，请在右侧「绑定邮箱」面板操作。</p>
 
             <div class="form-actions">
               <span class="save-hint">
@@ -428,14 +410,92 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <button type="button" class="security-action" @click="goToPasswordReset">
-            <span class="security-icon"><el-icon><Lock /></el-icon></span>
-            <span>
-              <b>修改登录密码</b>
-              <small>通过邮箱验证更新密码</small>
-            </span>
-            <span class="action-arrow">→</span>
-          </button>
+        </section>
+
+        <section class="account-panel ui-reveal">
+          <header class="panel-head compact">
+            <div>
+              <span>EMAIL BINDING</span>
+              <h3>{{ userInfo.email ? '换绑邮箱' : '绑定邮箱' }}</h3>
+              <p>{{ userInfo.email ? ('当前已绑定：' + userInfo.email) : '绑定邮箱后才能通过邮箱验证码修改密码。' }}</p>
+            </div>
+            <span class="pwd-mark"><el-icon><Message /></el-icon></span>
+          </header>
+
+          <div class="pwd-form">
+            <el-form label-position="top">
+              <el-form-item label="邮箱">
+                <el-input v-model="emailForm.email" type="email" placeholder="请输入要绑定的邮箱" clearable>
+                  <template #prefix><el-icon><Message /></el-icon></template>
+                </el-input>
+              </el-form-item>
+              <el-form-item label="验证码">
+                <div class="code-row">
+                  <el-input v-model="emailForm.code" placeholder="请输入邮箱验证码" maxlength="6" />
+                  <button
+                    type="button"
+                    class="secondary-button code-btn"
+                    :disabled="emailCountdown > 0 || emailSending"
+                    @click="sendBindCode"
+                  >
+                    {{ emailCountdown > 0 ? emailCountdown + 's' : '发送验证码' }}
+                  </button>
+                </div>
+              </el-form-item>
+              <button
+                type="button"
+                class="primary-button pwd-submit"
+                :disabled="emailBinding"
+                @click="bindEmail"
+              >
+                {{ emailBinding ? '正在绑定' : (userInfo.email ? '确认换绑' : '确认绑定') }}
+              </button>
+            </el-form>
+          </div>
+        </section>
+
+        <section class="account-panel ui-reveal">
+          <header class="panel-head compact">
+            <div>
+              <span>PASSWORD RESET</span>
+              <h3>修改密码</h3>
+              <p>通过已绑定邮箱的验证码更新登录密码。</p>
+            </div>
+            <span class="pwd-mark"><el-icon><Key /></el-icon></span>
+          </header>
+
+          <p v-if="!hasEmail" class="pwd-need-email">请先绑定邮箱后再修改密码。</p>
+          <div v-else class="pwd-form">
+            <el-form label-position="top">
+              <el-form-item label="新密码">
+                <el-input v-model="pwdForm.newPassword" type="password" placeholder="请输入新密码（至少6位）" show-password />
+              </el-form-item>
+              <el-form-item label="确认密码">
+                <el-input v-model="pwdForm.confirmPassword" type="password" placeholder="请再次输入新密码" show-password />
+              </el-form-item>
+              <el-form-item label="邮箱验证码">
+                <div class="code-row">
+                  <el-input v-model="pwdForm.code" placeholder="请输入邮箱验证码" maxlength="6" />
+                  <button
+                    type="button"
+                    class="secondary-button code-btn"
+                    :disabled="pwdCountdown > 0 || pwdSending"
+                    @click="sendPwdCode"
+                  >
+                    {{ pwdCountdown > 0 ? pwdCountdown + 's' : '发送验证码' }}
+                  </button>
+                </div>
+              </el-form-item>
+              <button
+                type="button"
+                class="primary-button pwd-submit"
+                :disabled="pwdSubmitting"
+                @click="changePassword"
+              >
+                {{ pwdSubmitting ? '正在提交' : '修改密码' }}
+              </button>
+            </el-form>
+          </div>
         </section>
 
         <section class="sync-panel ui-reveal">
@@ -1034,6 +1094,34 @@ onBeforeUnmount(() => {
   color: var(--plaza-text-muted);
   font-size: 9px;
 }
+
+/* —— 绑定邮箱 / 修改密码 —— */
+.pwd-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--plaza-accent);
+  background: var(--plaza-accent-soft);
+  font-size: 18px;
+}
+.pwd-form { margin-top: 16px; }
+.pwd-submit { width: 100%; min-height: 44px; }
+.code-row { display: flex; gap: 8px; width: 100%; }
+.code-row :deep(.el-input) { flex: 1; }
+.code-btn { flex: 0 0 auto; min-height: 40px; padding: 0 12px; white-space: nowrap; }
+.pwd-need-email {
+  margin-top: 16px;
+  padding: 14px 12px;
+  border: 1px dashed var(--plaza-border);
+  border-radius: 10px;
+  color: var(--plaza-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+.form-tip { margin: 10px 0 0; color: var(--plaza-text-muted); font-size: 10px; }
 
 @media (max-width: 1100px) {
   .identity-readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
