@@ -182,6 +182,65 @@ class KnowledgeRetrievalTool(BaseTool):
         new_tail = (tail_sib + rescued + tail_non)[: top_k - freeze_head]
         return head + new_tail
 
+    @classmethod
+    def _ensure_section_image(
+        cls,
+        ranked: List[Dict],
+        selected: List[Dict],
+        top_k: int,
+        plan,
+        freeze_head: int = 3,
+    ) -> List[Dict]:
+        """图片规整（仅 procedure）：装配/检修流程的回答以步骤为主、配图为辅，
+        让最终结果恰好保留 1 张主节（表头步骤所在节）的配图。
+        没图就从召回补 1 张主节图（治图被纯分数挤掉）；图太多或含无关节的图，
+        只留主节那 1 张、其余名额用步骤等非图候选回填（治按节捞图带出一堆无关配图）。
+        用 parent_section_id 锚定主节，比 toc_path 更可靠。"""
+        if plan.intent != "procedure":
+            return selected
+        if not selected or top_k <= 0:
+            return selected
+
+        def section_id(item: Dict) -> str:
+            return (item.get("metadata") or {}).get("parent_section_id") or ""
+
+        head = selected[:freeze_head]
+        anchor = {section_id(it) for it in head if cls._is_step(it) and section_id(it)}
+        if not anchor:
+            anchor = {section_id(it) for it in selected if cls._is_step(it) and section_id(it)}
+        if not anchor:
+            return selected
+
+        main_image = next(
+            (it for it in selected if cls._is_image_record(it) and section_id(it) in anchor),
+            None,
+        )
+        if main_image is None:
+            main_image = next(
+                (it for it in ranked if cls._is_image_record(it) and section_id(it) in anchor),
+                None,
+            )
+
+        non_images = [it for it in selected if not cls._is_image_record(it)]
+        had_image = len(non_images) != len(selected)
+        if main_image is None and not had_image:
+            return selected
+
+        reserve = max(top_k - 1, 0) if main_image is not None else top_k
+        rebuilt = non_images[:reserve]
+        if main_image is not None:
+            rebuilt.append(main_image)
+        if len(rebuilt) < top_k:
+            have = {it.get("doc_id") for it in rebuilt}
+            for it in ranked:
+                if len(rebuilt) >= top_k:
+                    break
+                if cls._is_image_record(it) or it.get("doc_id") in have:
+                    continue
+                rebuilt.append(it)
+                have.add(it.get("doc_id"))
+        return rebuilt[:top_k]
+
     @staticmethod
     def _mark_route(doc: Dict, route: str) -> Dict:
         item = dict(doc)
@@ -296,7 +355,9 @@ class KnowledgeRetrievalTool(BaseTool):
         document_id: str = None,
         limit: int = 5,
     ) -> List[Dict]:
-        if plan.intent != "image_identification":
+        # 放行 procedure（装配/检修流程）：让步骤类问题也能主动按章节把配图捞出来，
+        # 不再只服务"图像识别"意图——否则装配问题的配图全靠普通召回碰运气
+        if plan.intent not in {"image_identification", "procedure"}:
             return []
         if not vector_service:
             return []
@@ -354,12 +415,14 @@ class KnowledgeRetrievalTool(BaseTool):
                     )
                     add_records(records, 0.84, "explicit_page")
 
-        if pages and hasattr(vector_service, "get_section_records"):
+        # procedure 意图即使 query 没写页码，也按"召回到的步骤块所在章节"把同节配图捞出来
+        if (pages or plan.intent == "procedure") and hasattr(vector_service, "get_section_records"):
             for doc_id, parent_section_id in section_keys[: max(limit * 2, 10)]:
                 records = vector_service.get_section_records(
                     doc_id,
                     parent_section_id,
                     limit=IMAGE_LOCATOR_LOOKUP_LIMIT,
+                    chunk_type="image",
                 )
                 add_records(records, 0.78, "same_section")
 
@@ -654,6 +717,7 @@ class KnowledgeRetrievalTool(BaseTool):
             selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
 
         selected = self._promote_section_siblings(ranked, selected, final_top_k)
+        selected = self._ensure_section_image(ranked, selected, final_top_k, plan)
         final_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
         candidate_count_after = len(merged)
         await _emit_retrieval_event(

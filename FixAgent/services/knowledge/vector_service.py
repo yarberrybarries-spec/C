@@ -630,6 +630,7 @@ class VectorService:
         document_id: str,
         parent_section_id: str,
         limit: int,
+        chunk_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         records = []
         if not results or len(results) <= 1:
@@ -642,12 +643,14 @@ class VectorService:
                 continue
             if metadata.get("parent_section_id") != parent_section_id:
                 continue
+            if chunk_type and metadata.get("chunk_type") != chunk_type:
+                continue
             records.append(record)
             if len(records) >= limit:
                 break
         return records
 
-    def get_section_records(self, document_id: str, parent_section_id: str, limit: int = 6) -> List[Dict[str, Any]]:
+    def get_section_records(self, document_id: str, parent_section_id: str, limit: int = 6, chunk_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Read same-section vector records for parent/child context expansion."""
         if not document_id or not parent_section_id or limit <= 0:
             return []
@@ -657,6 +660,7 @@ class VectorService:
             section_filter = build_redis_filter(
                 document_id=document_id,
                 parent_section_id=parent_section_id,
+                chunk_type=chunk_type,
                 record_type="manual",
                 status="ready",
             )
@@ -668,14 +672,14 @@ class VectorService:
                 "LIMIT", "0", str(search_limit),
                 "DIALECT", "2"
             )
-            records = self._section_records_from_search_results(results, document_id, parent_section_id, limit)
+            records = self._section_records_from_search_results(results, document_id, parent_section_id, limit, chunk_type)
             if records:
                 return records
         except Exception as e:
             logger.warning(f"get_section_records indexed lookup failed: {e}")
 
         try:
-            document_filter = build_redis_filter(document_id=document_id, record_type="manual", status="ready")
+            document_filter = build_redis_filter(document_id=document_id, chunk_type=chunk_type, record_type="manual", status="ready")
             results = self.redis.execute_command(
                 "FT.SEARCH",
                 self.INDEX_NAME,
@@ -684,7 +688,7 @@ class VectorService:
                 "LIMIT", "0", str(max(search_limit, 1000)),
                 "DIALECT", "2"
             )
-            return self._section_records_from_search_results(results, document_id, parent_section_id, limit)
+            return self._section_records_from_search_results(results, document_id, parent_section_id, limit, chunk_type)
         except Exception as e:
             logger.warning(f"get_section_records fallback lookup failed: {e}")
             return []

@@ -419,7 +419,9 @@ class _SafetyCheck:
         },
         {
             "name": "高温防护",
-            "trigger": ["发动机", "排气", "冷却液", "高温", "过热", "涡轮", "锅炉", "蒸汽", "排气管", "气缸"],
+            # 去掉"发动机""气缸"：冷态安装/拆解（装起动电机、提到"气缸头"装涨紧器）也会命中、造成误报；
+            # 真高温场景仍由"高温/过热/排气/排气管/涡轮"等词捕获
+            "trigger": ["排气", "冷却液", "高温", "过热", "涡轮", "锅炉", "蒸汽", "排气管"],
             "required": ["冷却", "降温", "防烫"],
             "warning": "安全提醒：设备停机后需充分冷却（建议等待30分钟以上），操作时佩戴防烫手套。高温部件温度可达100°C以上，直接接触会造成严重烫伤。"
         },
@@ -834,6 +836,343 @@ class ReviewAgent:
                     values.append(value)
         return values
 
+    # —— 未经依据内容的内联标注 / 数值降级（由审核器盖章，不依赖模型自报）——
+
+    _STEP_HEADER_PATTERN = re.compile(
+        r"^\s*(?:步骤|第)\s*[一二三四五六七八九十百零〇\d]+\s*[步、.．:：]?"
+    )
+    _UNVERIFIED_LABEL = "【未经手册查证】"
+    _SECTION_UNVERIFIED_LABEL = "【以下内容暂无手册依据，基于通用经验，请结合实车甄别】"
+
+    # 仅降级"技术参数型"数值（扭矩/间隙/压力/电压/温度…），不动时间、里程等通用数字
+    _TECHNICAL_PARAM_PATTERN = re.compile(
+        r"\d[\d,]*(?:\.\d+)?\s*(?:[～~\-–—±]\s*\d+(?:\.\d+)?)?\s*"
+        r"(?:N\s*[·.]?\s*m|mm|cm|MPa|kPa|°[CF]|℃|V|%)",
+        re.IGNORECASE,
+    )
+    _PARAM_DOWNGRADE_HINT = "以设备手册/铭牌为准"
+    # 有精确参数被降级时，末尾补的整体声明（取代逐句【未经手册查证】标签）
+    _PARAM_DISCLAIMER = "注：以上精确参数（扭矩、间隙等）未在检索到的手册中找到，请以设备手册/铭牌为准。"
+
+    # 引导词 + 技术参数：降级时连引导词（含“常见为/通常为”等程度词）一起替换，
+    # 避免“常见以…为准”“为以…为准”这类病句
+    _PARAM_WITH_LEAD_PATTERN = re.compile(
+        r"(?:常见|通常|一般|大约|大概)?\s*"
+        r"(?:为|约|约为|达|至|不低于|不高于|不超过|不小于|不大于|≥|≤|大于|小于)?\s*"
+        r"\d[\d,]*(?:\.\d+)?\s*(?:[～~\-–—±]\s*\d+(?:\.\d+)?)?\s*"
+        r"(?:N\s*[·.]?\s*m|mm|cm|MPa|kPa|°[CF]|℃|V|%)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _annotate_unverified_inline(
+        cls,
+        message: str,
+        grounding: Dict[str, Any],
+        graph: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """在没有手册/图谱依据的内容前插入【未经手册查证】标签。
+
+        标签依据审核器的核对结果（grounding 向量/字面比对 + graph 图谱命中），
+        不依赖模型自报——模型分不清自己哪句有据、哪句是凭经验补的。
+        步骤态标在所属"步骤"标题行前（每步一张）；无步骤结构时标在命中行前。
+        """
+        if not message:
+            return message
+
+        targets: List[str] = []
+        for item in grounding.get("unverified_claims", []):
+            sentence = (item.get("sentence") or "").strip()
+            # 模型编造的"根据手册第X页"等假来源句不在此标注，交由 _move_unverified_source_claims 删除
+            if sentence and not cls._is_unsupported_source_claim(sentence):
+                targets.append(sentence)
+        for path in (graph or {}).get("unverified_paths", []):
+            fault = (path.get("fault_name") or "").strip()
+            if fault:
+                targets.append(fault)
+        if not targets:
+            return message
+
+        lines = message.split("\n")
+
+        flagged: set = set()
+        for target in targets:
+            pos = message.find(target)
+            if pos >= 0:
+                flagged.add(message.count("\n", 0, pos))
+                continue
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped and (stripped in target or target in stripped):
+                    flagged.add(i)
+                    break
+        if not flagged:
+            return message
+
+        # 命中行上提到所属"步骤"标题行：步骤态→标题前（每步一张）；无步骤→命中行前
+        anchors: set = set()
+        for idx in flagged:
+            header = None
+            for j in range(idx, -1, -1):
+                if cls._STEP_HEADER_PATTERN.match(lines[j]):
+                    header = j
+                    break
+            anchors.add(header if header is not None else idx)
+
+        # 自适应粒度：大面积无依据（多处都没对上）时，逐处标会糊成一片、失去意义，
+        # 退化为只在开头加一个总标记；只有少数无依据时才逐处精确标。
+        non_empty = sum(1 for ln in lines if ln.strip())
+        if len(anchors) >= 3 or (non_empty >= 4 and len(anchors) / non_empty >= 0.4):
+            return cls._prepend_section_label(message)
+
+        for idx in anchors:
+            stripped = lines[idx].lstrip()
+            if not stripped or stripped.startswith(cls._UNVERIFIED_LABEL):
+                continue
+            indent = lines[idx][: len(lines[idx]) - len(stripped)]
+            lines[idx] = f"{indent}{cls._UNVERIFIED_LABEL}{stripped}"
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _prepend_section_label(cls, message: str) -> str:
+        """大面积无依据时，在整段开头加一个总标记，代替逐行标注。"""
+        stripped = message.lstrip()
+        if stripped.startswith(cls._SECTION_UNVERIFIED_LABEL):
+            return message
+        return cls._SECTION_UNVERIFIED_LABEL + "\n\n" + stripped
+
+    @classmethod
+    def _reply_has_operational_steps(cls, message: str) -> bool:
+        """回答是否真给出了步骤化操作指引（用“步骤N/第N步”标题作代理）。
+        有 → 正式操作指引，上全套校验（标注/安全）；
+        没有 → 追问/对话/给方向，校验轻装退场，只保留数值红线。
+        """
+        if not message:
+            return False
+        return any(cls._STEP_HEADER_PATTERN.match(line) for line in message.split("\n"))
+
+    @classmethod
+    def _downgrade_unverified_numbers(cls, message: str, grounding: Dict[str, Any]) -> str:
+        """把没有手册依据的精确技术参数（扭矩/间隙/压力…）就地换成"以手册为准"。
+
+        这是独立于标签的红线：哪怕整步已标【未经手册查证】，无依据的精确数值仍要降级，
+        绝不把模型编造的确切值（如 0.5~1.5mm）放给工人。
+        """
+        if not message:
+            return message
+        values: List[str] = []
+        for item in grounding.get("unverified_claims", []):
+            # 字面比对分支：直接给出未匹配的关键值
+            for claim in item.get("unmatched_claims", []):
+                claim = (claim or "").strip()
+                if claim and cls._TECHNICAL_PARAM_PATTERN.search(claim) and claim not in values:
+                    values.append(claim)
+            # 语义分支只有整句、没有 unmatched_claims：从句子里直接抽技术参数数值，避免漏降
+            sentence = item.get("sentence") or ""
+            for match in cls._TECHNICAL_PARAM_PATTERN.finditer(sentence):
+                value = match.group(0).strip()
+                if value and value not in values:
+                    values.append(value)
+        if not values:
+            return message
+        result = message
+        # 长串优先替换，避免子串误伤（如 "1.5mm" 含于 "0.5-1.5mm"）
+        for value in sorted(values, key=len, reverse=True):
+            result = result.replace(value, cls._PARAM_DOWNGRADE_HINT)
+        return result
+
+    @classmethod
+    def _downgrade_uncited_numbers(cls, message: str, trace: List[Dict]) -> str:
+        """数值红线（字面核对版）：回答里每个精确技术参数，其确切数字串若没在这轮
+        检索到的手册原文里出现过，就降级为“以手册为准”——不管整句多像手册。
+
+        相比 _downgrade_unverified_numbers（依赖 grounding 相似度判定，会被“编造数值裹在
+        像手册的句子里”骗过），这里直接拿数值字面核对检索原文，更硬。降级时连同前面的
+        “为/≥/约”等引导词一起替换，不留“为以手册为准”这类病句。
+
+        取舍：宁可错降不可漏放——手册写“12牛·米”而模型写“12N·m”时单位写法不同会
+        匹配不上，手册真有的数值也可能被降级，这是红线优先的代价。
+        """
+        if not message:
+            return message
+        evidence = _GroundingCheck._collect_evidence(trace)
+        normalized_evidence = _GroundingCheck._normalize("\n".join(evidence)) if evidence else ""
+
+        def _replace(match: re.Match) -> str:
+            text = match.group(0)
+            num_match = cls._TECHNICAL_PARAM_PATTERN.search(text)
+            if not num_match:
+                return text
+            if _GroundingCheck._normalize(num_match.group(0)) in normalized_evidence:
+                return text  # 手册原文里确有该数值 → 原样保留
+            return cls._PARAM_DOWNGRADE_HINT  # 查无依据 → 降级（连引导词一并替换）
+
+        return cls._PARAM_WITH_LEAD_PATTERN.sub(_replace, message)
+
+    @classmethod
+    def _append_param_disclaimer(cls, message: str) -> str:
+        """有精确参数被降级时，末尾补一句确定性的整体声明，取代逐句【未经手册查证】标签。"""
+        if not message or cls._PARAM_DISCLAIMER in message:
+            return message
+        return message.rstrip() + "\n\n" + cls._PARAM_DISCLAIMER
+
+    # —— ④ 步骤忠实度：删掉手册主节里没有的多造步骤 ——
+    _MANUAL_STEP_LEAD = re.compile(r"^\s*\d+\s*[.、．)）]\s*")
+    _STEP_NAME_STRIP = re.compile(r"^\s*(?:步骤|第)\s*[一二三四五六七八九十百零〇\d]+\s*[步、.．:：]?\s*")
+    _STEP_NUMBER_SUB = re.compile(r"(步骤|第)\s*[一二三四五六七八九十百零〇\d]+")
+    _STEP_NAME_STOPWORDS = set("　 的了和与及对起动电机")
+
+    @staticmethod
+    def _cn_number(n: int) -> str:
+        cn = "零一二三四五六七八九十"
+        if n <= 10:
+            return cn[n]
+        if n < 20:
+            return "十" + (cn[n - 10] if n > 10 else "")
+        if n < 100:
+            return cn[n // 10] + "十" + (cn[n % 10] if n % 10 else "")
+        return str(n)
+
+    @classmethod
+    def _step_name_from_content(cls, content: str) -> str:
+        """手册块首行若是"数字. 名称"，取其中的名称；否则返回空串。
+        排除"2.3 安装起动电机"这类小节标题（去号后残留以数字打头）。"""
+        first_line = (content or "").strip().split("\n", 1)[0].strip()
+        if not cls._MANUAL_STEP_LEAD.match(first_line):
+            return ""
+        name = cls._MANUAL_STEP_LEAD.sub("", first_line).strip()
+        if not name or name[0].isdigit():
+            return ""
+        return name
+
+    @classmethod
+    def _manual_steps_by_section(cls, trace: List[Dict]) -> Dict[str, Dict[str, Any]]:
+        """从检索证据按章节归集手册步骤名：{sid: {"doc_id":.., "names":[..]}}。
+        只取 step_raw/text 且首行以"数字."开头的块（手册原始编号步骤）。"""
+        sections: Dict[str, Dict[str, Any]] = {}
+        for step in trace or []:
+            if step.get("action") != "tool_call":
+                continue
+            for tc in step.get("tool_calls", []):
+                if tc.get("name") != "knowledge_retrieval":
+                    continue
+                data = tc.get("result_data")
+                if not isinstance(data, list):
+                    continue
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    md = item.get("metadata") or {}
+                    if md.get("chunk_type") not in {"step_raw", "text"}:
+                        continue
+                    sid = md.get("parent_section_id")
+                    if not sid:
+                        continue
+                    name = cls._step_name_from_content(item.get("content") or item.get("text") or "")
+                    if not name:
+                        continue
+                    bucket = sections.setdefault(sid, {"doc_id": md.get("document_id"), "names": []})
+                    if not bucket.get("doc_id"):
+                        bucket["doc_id"] = md.get("document_id")
+                    if name not in bucket["names"]:
+                        bucket["names"].append(name)
+        return sections
+
+    @classmethod
+    def _section_step_names(cls, doc_id: str, sid: str) -> List[str]:
+        """直接查该章节全部记录，补全手册步骤名——不受检索 top_k 影响，
+        防止"主节真步骤没被召回"而被误删。查询失败则返回空、退回用召回到的步骤。"""
+        if not doc_id or not sid:
+            return []
+        try:
+            from services.knowledge.vector_service import get_vector_service
+            records = get_vector_service().get_section_records(doc_id, sid, limit=50)
+        except Exception:
+            return []
+        names: List[str] = []
+        for rec in records or []:
+            md = rec.get("metadata") or {}
+            if md.get("chunk_type") not in {"step_raw", "text"}:
+                continue
+            name = cls._step_name_from_content(rec.get("content") or rec.get("text") or "")
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @classmethod
+    def _step_name_overlap(cls, manual_name: str, model_name: str) -> float:
+        """手册步骤名的关键字符有多大比例出现在模型步骤名里（0~1）。"""
+        a = set(manual_name) - cls._STEP_NAME_STOPWORDS
+        if not a:
+            return 0.0
+        return len(a & set(model_name)) / len(a)
+
+    @classmethod
+    def _drop_fabricated_steps(cls, message: str, trace: List[Dict]) -> str:
+        """步骤忠实度硬兜底：模型操作步骤里和"主节（手册中与回答重合最多的章节）"
+        对不上的步骤，整步删除并重排编号——堵模型从部件清单/拆卸步骤串出手册安装
+        流程根本没有的步（如"紧固螺栓"）。保守优先：证据不足、主节不明、或多余步
+        反占多数时，一律原样返回，宁漏不误删。"""
+        if not message or not cls._reply_has_operational_steps(message):
+            return message
+        sections = cls._manual_steps_by_section(trace)
+        if not sections:
+            return message
+
+        lines = message.split("\n")
+        head_idx = [i for i, line in enumerate(lines) if cls._STEP_HEADER_PATTERN.match(line)]
+        if len(head_idx) < 2:
+            return message
+
+        blocks = []
+        for k, hi in enumerate(head_idx):
+            end = head_idx[k + 1] if k + 1 < len(head_idx) else len(lines)
+            name = cls._STEP_NAME_STRIP.sub("", lines[hi]).strip().strip("（）()【】[]：: ").strip()
+            blocks.append({"name": name, "start": hi, "end": end})
+        model_names = [b["name"] for b in blocks]
+
+        threshold = 0.7
+
+        def matches(step_names: List[str], model_name: str) -> bool:
+            return any(cls._step_name_overlap(sn, model_name) >= threshold for sn in step_names)
+
+        # 1) 用召回到的步骤名粗定主节（与模型回答重合最多的章节）
+        main_sid, best = None, 0
+        for sid, info in sections.items():
+            hit = sum(1 for mn in model_names if matches(info["names"], mn))
+            if hit > best:
+                best, main_sid = hit, sid
+        if not main_sid or best < 2:
+            return message
+
+        # 2) 拿主节"完整"步骤集合（直接查库补全，避免 top_k 召回不全误删真步骤）
+        full_steps = cls._section_step_names(sections[main_sid].get("doc_id"), main_sid)
+        if not full_steps:
+            full_steps = sections[main_sid]["names"]
+
+        # 3) 用完整集合核对每个模型步骤
+        keep_flags = [matches(full_steps, b["name"]) for b in blocks]
+        matched = sum(keep_flags)
+        if matched < 2 or matched < len(blocks) - matched:
+            return message  # 主节解释不了多数步骤 → 不敢删
+        if matched == len(blocks):
+            return message  # 没有多余步
+
+        rebuilt = lines[: head_idx[0]]
+        new_no = 0
+        for b, ok in zip(blocks, keep_flags):
+            if not ok:
+                continue
+            new_no += 1
+            block_lines = lines[b["start"]:b["end"]]
+            cn = cls._cn_number(new_no)
+            block_lines[0] = cls._STEP_NUMBER_SUB.sub(
+                lambda m, _cn=cn: f"{m.group(1)}{_cn}", block_lines[0], count=1
+            )
+            rebuilt.extend(block_lines)
+        return "\n".join(rebuilt)
+
     async def review(self, fix_output: AgentOutput, level: str = "full") -> AgentOutput:
         """
         对 FixAgent 输出执行 3 层校验。
@@ -879,8 +1218,12 @@ class ReviewAgent:
         review_level = evidence["review_level"]
         grounding = evidence["grounding"]
         graph = evidence["graph"]
+        # 校验强度跟“实际回答内容”走：只有真给出步骤化操作指引，才上安全/标注全套校验；
+        # 追问/对话/给方向（无操作步骤）→ 校验退场，不甩安全提醒、不扣总标。
+        has_operational_steps = self._reply_has_operational_steps(message)
+
         safety = _SafetyReviewer.review(message, user_message=user_message, policy=intent_policy)
-        if not safety_required:
+        if not safety_required or not has_operational_steps:
             safety = self._skipped_safety()
 
         verification = {
@@ -897,41 +1240,32 @@ class ReviewAgent:
             safety.get("missing_count", 0) > 0
         )
 
+        # ① 证据不足不再冷拒答（block 退役）：改为"照常作答 + 审核器盖标签 + 数值降级"。
+        #    保留字段并恒为 False，使 api/main.py 中依赖它的分支安全跳过。
         blocked_for_insufficient_evidence = False
-        if strict_evidence_required:
-            blocked_for_insufficient_evidence = self._should_block_for_insufficient_evidence(
-                grounding,
-                trace,
-                user_message=user_message,
-                answer=message,
-            )
-        if blocked_for_insufficient_evidence:
-            final_message = self._insufficient_evidence_message()
-            held_for_confirmation = [
-                item.get("sentence", "").strip()
-                for item in grounding.get("unverified_claims", [])
-                if item.get("sentence", "").strip()
-            ]
-        else:
-            final_message = self._strip_unsolicited_repair_guidance(message, user_message)
-            final_message, source_held = self._move_unverified_source_claims(final_message, grounding)
-            final_message, critical_held = self._move_unverified_critical_lines(final_message, grounding)
-            held_for_confirmation = source_held + [
-                item for item in critical_held if item not in source_held
-            ]
-        confirmed_values = self._confirmed_critical_values(grounding) if strict_evidence_required else []
-        pending_lines = ""
-        if strict_evidence_required and held_for_confirmation:
-            pending_lines = self._format_pending_items(held_for_confirmation)
-            if not self._should_show_pending_section(user_message, message, held_for_confirmation):
-                pending_lines = ""
+
+        # 删除模型编造的"根据手册第X页"等假来源句（保留原清理，但不再搬进待确认区）
+        final_message = self._strip_unsolicited_repair_guidance(message, user_message)
+        final_message, source_held = self._move_unverified_source_claims(final_message, grounding)
+        # ② 标签退场：不再逐句盖【未经手册查证】——忠实于手册但被模型改写的步骤会因相似度
+        #    不够被误判误标。改为：数值红线硬卡（③）+ 有降级时补一句整体声明，取代逐句标。
+        # ③ 数值红线（字面核对版）：精确参数的确切数字串若不在这轮检索原文里就降级，
+        #    不管整句多像手册——堵住"编造数值裹在像手册的句子里"漏过；连引导词一起换，不留病句
+        # ④ 步骤忠实度：删掉"主节"手册里没有的多造步骤并重排编号（如把部件清单/拆卸
+        #    步骤里的螺栓串成一步"紧固螺栓"），堵 LLM 加戏；保守，拿不准就不动。
+        final_message = self._drop_fabricated_steps(final_message, trace)
+        before_downgrade = final_message
+        final_message = self._downgrade_uncited_numbers(final_message, trace)
+        if final_message != before_downgrade:
+            # 确有精确参数被降级 → 补一句确定性整体声明（取代逐句标签）
+            final_message = self._append_param_disclaimer(final_message)
+        # ⑤ 不再调用 _move_unverified_critical_lines / _renumber，保留模型分好的步骤层次，不拍平
+        held_for_confirmation = source_held
 
         final_message = _ResponseComposer.compose(
             base_message=final_message,
             safety=safety,
             policy=intent_policy,
-            confirmed_values=confirmed_values,
-            pending_lines=pending_lines,
         )
         final_message = _OutputSanitizer.sanitize(final_message)
 
@@ -966,57 +1300,11 @@ class ReviewAgent:
 
 
     def get_inline_markers(self, answer: str, verification: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """[已停用] 未验证内容现在直接以【未经手册查证】文本标签内联进 message
+        （见 _annotate_unverified_inline），流式与非流式共用同一套文本标签。
+        这里不再额外生成 marker 事件，避免对同一处内容重复标注。
         """
-        获取内联验证标记的位置列表，供流式输出时插入。
-
-        根据 grounding 和 graph 的校验结果，找出未验证内容在原文中的字符位置，
-        返回按位置升序排列的标记列表。调用方在逐字流式输出时，
-        当到达 marker["char_pos"] 时先发送 marker 事件再继续发 token。
-
-        Returns:
-            [{"char_pos": int, "text": str, "type": str}, ...]
-        """
-        markers: List[Dict[str, Any]] = []
-        grounding = verification.get("grounding", {})
-        graph = verification.get("graph", {})
-
-        # grounding 未验证声明 → 在声明句首插入标记
-        for claim in grounding.get("unverified_claims", []):
-            if claim.get("critical_claims"):
-                continue
-            sentence = claim.get("sentence", "")
-            if not sentence:
-                continue
-            pos = answer.find(sentence)
-            if pos < 0:
-                continue
-            sim = claim.get("max_similarity", 0.0)
-            markers.append({
-                "char_pos": pos,
-                "text": f"⚠️[依据不足-相似度{sim:.2f}] ",
-                "type": "grounding_unverified",
-            })
-
-        # graph 未验证路径 → 在故障名首次出现处插入标记
-        for path in graph.get("unverified_paths", []):
-            fault = path.get("fault_name", "")
-            reason = path.get("reason", "")
-            if not fault:
-                continue
-            pos = answer.find(fault)
-            if pos < 0:
-                continue
-            if any(m["char_pos"] == pos for m in markers):
-                continue
-            label = f"[图谱:{reason}] " if reason else "[图谱未确认] "
-            markers.append({
-                "char_pos": pos,
-                "text": label,
-                "type": "graph_unverified",
-            })
-
-        markers.sort(key=lambda m: m["char_pos"])
-        return markers
+        return []
 
 
 class _OutputSanitizer:
